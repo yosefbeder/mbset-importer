@@ -127,6 +127,7 @@ export default function App() {
   const [year, setYear] = useState("");
 
   // Model Selection
+  const [model, setModel] = useState("gemini-3-flash-preview");
   const [customInstructions, setCustomInstructions] = useState("");
 
   const [step, setStep] = useState("input");
@@ -218,7 +219,7 @@ export default function App() {
       let response;
       for (let i = 0; i < apiKeys.length; i++) {
         response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKeys[i]}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKeys[i]}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -534,6 +535,29 @@ export default function App() {
                       fontSize: 13,
                     }}
                   />
+                </div>
+
+                <div style={{ marginTop: 16 }}>
+                  <label
+                    style={{
+                      fontSize: 12,
+                      color: "var(--color-text-secondary)",
+                      display: "block",
+                      marginBottom: 6,
+                    }}
+                  >
+                    Model
+                  </label>
+                  <select
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    style={{ width: "100%", boxSizing: "border-box" }}
+                  >
+                    <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                    <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                  </select>
                 </div>
               </div>
             )}
