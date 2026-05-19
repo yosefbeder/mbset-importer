@@ -230,6 +230,24 @@ export default function App() {
               contents: [{ role: "user", parts }],
               generationConfig: {
                 responseMimeType: "application/json",
+                responseSchema: {
+                  type: "ARRAY",
+                  items: {
+                    type: "OBJECT",
+                    properties: {
+                      cas: { type: "STRING" },
+                      text: { type: "STRING" },
+                      options: {
+                        type: "ARRAY",
+                        items: { type: "STRING" }
+                      },
+                      correct: { type: "STRING" },
+                      type: { type: "STRING" },
+                      exp: { type: "STRING" }
+                    },
+                    required: ["cas", "text", "options", "correct", "type", "exp"]
+                  }
+                }
               },
             }),
           },
