@@ -114,13 +114,6 @@ function computeTag(source, examType, professorName, customSource, year) {
   return source; // Department or anything else
 }
 
-const AVAILABLE_MODELS = [
-  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
-  { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" },
-];
-
 export default function App() {
   const [inputText, setInputText] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
@@ -134,7 +127,6 @@ export default function App() {
   const [year, setYear] = useState("");
 
   // Model Selection
-  const [model, setModel] = useState("gemini-2.5-pro");
   const [customInstructions, setCustomInstructions] = useState("");
 
   const [step, setStep] = useState("input");
@@ -218,25 +210,40 @@ export default function App() {
 
       setStatusMsg("Calling Gemini AI…");
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: EXTRACTION_SYSTEM }],
-            },
-            contents: [{ role: "user", parts }],
-            generationConfig: {
-              responseMimeType: "application/json",
-            },
-          }),
-        },
-      );
+      const apiKeys = (process.env.NEXT_PUBLIC_GEMINI_API_KEY || "").split(",").map(k => k.trim()).filter(Boolean);
+      if (apiKeys.length === 0) {
+        throw new Error("No Gemini API key configured.");
+      }
 
-      if (!response.ok) {
+      let response;
+      for (let i = 0; i < apiKeys.length; i++) {
+        response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKeys[i]}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [{ text: EXTRACTION_SYSTEM }],
+              },
+              contents: [{ role: "user", parts }],
+              generationConfig: {
+                responseMimeType: "application/json",
+              },
+            }),
+          },
+        );
+
+        if (response.ok) {
+          break;
+        }
+
         const errorText = await response.text();
+        if (response.status === 429 && i < apiKeys.length - 1) {
+          console.warn(`API key ${i + 1} exhausted, rotating to next key...`);
+          continue;
+        }
+
         throw new Error(`Gemini API Error: ${response.status} ${errorText}`);
       }
 
@@ -535,59 +542,33 @@ export default function App() {
               <p className="section-label">
                 {step === "done"
                   ? "Update Classification"
-                  : "2 — Classification & Model"}
+                  : "2 — Classification"}
               </p>
 
-              <div className="field-row">
-                <div className="field-wrap">
-                  <label
-                    style={{
-                      fontSize: 12,
-                      color: "var(--color-text-secondary)",
-                      display: "block",
-                      marginBottom: 4,
-                    }}
-                  >
-                    Source <span style={{ color: "#A32D2D" }}>*</span>
-                  </label>
-                  <select
-                    value={source}
-                    onChange={(e) => setSource(e.target.value)}
-                    style={{ width: "100%", boxSizing: "border-box" }}
-                  >
-                    <option value="" disabled>
-                      Select source…
-                    </option>
-                    <option value="Exams">Exams</option>
-                    <option value="Professor">Professor</option>
-                    <option value="Department">Department</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-
-                <div className="field-wrap">
-                  <label
-                    style={{
-                      fontSize: 12,
-                      color: "var(--color-text-secondary)",
-                      display: "block",
-                      marginBottom: 4,
-                    }}
-                  >
-                    AI Model <span style={{ color: "#A32D2D" }}>*</span>
-                  </label>
-                  <select
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    className="w-full p-2 border rounded-md"
-                  >
-                    {AVAILABLE_MODELS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="field-wrap">
+                <label
+                  style={{
+                    fontSize: 12,
+                    color: "var(--color-text-secondary)",
+                    display: "block",
+                    marginBottom: 4,
+                  }}
+                >
+                  Source <span style={{ color: "#A32D2D" }}>*</span>
+                </label>
+                <select
+                  value={source}
+                  onChange={(e) => setSource(e.target.value)}
+                  style={{ width: "100%", boxSizing: "border-box" }}
+                >
+                  <option value="" disabled>
+                    Select source…
+                  </option>
+                  <option value="Exams">Exams</option>
+                  <option value="Professor">Professor</option>
+                  <option value="Department">Department</option>
+                  <option value="Other">Other</option>
+                </select>
               </div>
 
               {source === "Exams" && (
