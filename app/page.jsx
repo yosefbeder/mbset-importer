@@ -10,7 +10,8 @@ Each element must have exactly these fields:
 - options: (array of strings) Answer choices with all prefixes removed. Empty array [] for QROC/written questions.
 - correct: (string) The correct answer letter(s) (e.g. "A", "B,D"). Extract it from the file or generate it if absent. Empty string "" for QROC.
 - type: (string) "QCS" for MCQs and matching, "QROC" for written/open-ended.
-- exp: (string) Answer of written question (extract it from the file or generate it if absent). For MCQs, extract the explanation in the source only if present.`;
+- exp: (string) For MCQs, extract the explanation in the source only if present. Empty string "" for QROC.
+- modelAnswer: (string) For QROC, extract the model answer only if present in the file. Empty string "" for MCQs.`;
 
 function convertToCSV(questions, { tag, year, lecture, subject }) {
   const headers = [
@@ -31,6 +32,7 @@ function convertToCSV(questions, { tag, year, lecture, subject }) {
     "Type",
     "tagSuggere",
     "EXP",
+    "ModelAnswer",
   ];
   const esc = (v) => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -63,6 +65,7 @@ function convertToCSV(questions, { tag, year, lecture, subject }) {
         q.type || "QCS",
         subject || "",
         q.exp || "",
+        q.modelAnswer || "",
       ]
         .map(esc)
         .join(","),
@@ -247,6 +250,7 @@ export default function App() {
                       correct: { type: "STRING" },
                       type: { type: "STRING" },
                       exp: { type: "STRING" },
+                      modelAnswer: { type: "STRING" },
                     },
                     required: [
                       "cas",
@@ -255,6 +259,7 @@ export default function App() {
                       "correct",
                       "type",
                       "exp",
+                      "modelAnswer",
                     ],
                   },
                 },
@@ -1076,6 +1081,25 @@ export default function App() {
                                 {q.exp.length > 160
                                   ? q.exp.slice(0, 160) + "…"
                                   : q.exp}
+                              </p>
+                            )}
+                            {q.modelAnswer && (
+                              <p
+                                style={{
+                                  margin: "4px 0 0",
+                                  fontSize: 11,
+                                  color: "var(--color-text-secondary)",
+                                  lineHeight: 1.5,
+                                }}
+                              >
+                                <i
+                                  className="ti ti-check"
+                                  aria-hidden="true"
+                                  style={{ fontSize: 11, marginRight: 3 }}
+                                ></i>
+                                {q.modelAnswer.length > 160
+                                  ? q.modelAnswer.slice(0, 160) + "…"
+                                  : q.modelAnswer}
                               </p>
                             )}
                           </div>
