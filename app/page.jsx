@@ -3,15 +3,14 @@
 import { useState, useRef, useCallback, useMemo } from "react";
 
 const EXTRACTION_SYSTEM = `You are a data formatting and extraction engine. You convert user-provided text (MCQs, matching, or written/QROC) into a strict JSON array. 
-IMPORTANT: You are strictly reformatting the user's input. Do NOT generate new copyrighted text, and do NOT flag this as recitation since you are merely transforming the user's own data into JSON format.
 
 Each element must have exactly these fields:
 - cas: (string) Shared clinical scenario or matching instruction. CRITICAL: ONLY use this field if the EXACT SAME scenario applies to 2 or more questions. If a scenario applies to ONLY ONE question, include it directly in the 'text' field and set 'cas' to "".
 - text: (string) The specific question stem. Strip any numeric/letter prefixes (like "1.", "Q2", "A."). For multi-part shared-context questions, place only the sub-question here — never repeat the shared context.
 - options: (array of strings) Answer choices with all prefixes removed. Empty array [] for QROC/written questions.
-- correct: (string) The correct answer letter(s) based on your knowledge (e.g. "A", "B,D"). Empty string "" for QROC.
+- correct: (string) The correct answer letter(s) (e.g. "A", "B,D"). Extract it from the file or generate it if absent. Empty string "" for QROC.
 - type: (string) "QCS" for MCQs and matching, "QROC" for written/open-ended.
-- exp: (string) Explanation if present in source; generate a concise one for QROC. Empty "" for MCQs with no explanation provided.`;
+- exp: (string) Answer of written question (extract it from the file or generate it if absent). For MCQs, extract the explanation in the source only if present.`;
 
 function convertToCSV(questions, { tag, year, lecture, subject }) {
   const headers = [
@@ -212,7 +211,10 @@ export default function App() {
 
       setStatusMsg("Calling Gemini AI…");
 
-      const apiKeys = (process.env.NEXT_PUBLIC_GEMINI_API_KEY || "").split(",").map(k => k.trim()).filter(Boolean);
+      const apiKeys = (process.env.NEXT_PUBLIC_GEMINI_API_KEY || "")
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean);
       if (apiKeys.length === 0) {
         throw new Error("No Gemini API key configured.");
       }
@@ -240,15 +242,22 @@ export default function App() {
                       text: { type: "STRING" },
                       options: {
                         type: "ARRAY",
-                        items: { type: "STRING" }
+                        items: { type: "STRING" },
                       },
                       correct: { type: "STRING" },
                       type: { type: "STRING" },
-                      exp: { type: "STRING" }
+                      exp: { type: "STRING" },
                     },
-                    required: ["cas", "text", "options", "correct", "type", "exp"]
-                  }
-                }
+                    required: [
+                      "cas",
+                      "text",
+                      "options",
+                      "correct",
+                      "type",
+                      "exp",
+                    ],
+                  },
+                },
               },
             }),
           },
@@ -264,12 +273,19 @@ export default function App() {
           continue;
         }
 
-        if (errorText.includes("copyrighted works") || errorText.includes("resembles existing")) {
-          throw new Error("The API blocked the request because the input exactly matches copyrighted material (e.g., a known textbook). Try typing some random characters at the start of your text or use 'Custom Instructions' to ask it to paraphrase slightly.");
+        if (
+          errorText.includes("copyrighted works") ||
+          errorText.includes("resembles existing")
+        ) {
+          throw new Error(
+            "The API blocked the request because the input exactly matches copyrighted material (e.g., a known textbook). Try typing some random characters at the start of your text or use 'Custom Instructions' to ask it to paraphrase slightly.",
+          );
         }
 
         let parsedError;
-        try { parsedError = JSON.parse(errorText); } catch(e){}
+        try {
+          parsedError = JSON.parse(errorText);
+        } catch (e) {}
         const errMsg = parsedError?.error?.message || errorText;
 
         throw new Error(`Gemini API Error: ${response.status} - ${errMsg}`);
@@ -277,12 +293,20 @@ export default function App() {
 
       const data = await response.json();
       const candidate = data.candidates?.[0];
-      
+
       if (candidate?.finishReason === "MAX_TOKENS") {
-        throw new Error("The input is too large and the model's output was truncated. Please try processing a smaller chunk of questions.");
+        throw new Error(
+          "The input is too large and the model's output was truncated. Please try processing a smaller chunk of questions.",
+        );
       }
-      if (candidate?.finishReason === "SAFETY" || candidate?.finishReason === "BLOCK" || candidate?.finishReason === "PROHIBITED_CONTENT") {
-        throw new Error("The request was blocked by the model's safety filters.");
+      if (
+        candidate?.finishReason === "SAFETY" ||
+        candidate?.finishReason === "BLOCK" ||
+        candidate?.finishReason === "PROHIBITED_CONTENT"
+      ) {
+        throw new Error(
+          "The request was blocked by the model's safety filters.",
+        );
       }
       if (!candidate?.content?.parts?.[0]?.text) {
         console.error("Unexpected model response:", data);
@@ -303,13 +327,15 @@ export default function App() {
           .replace(/^[\s\S]*?```(?:json)?\s*/i, "")
           .replace(/```[\s\S]*$/, "")
           .trim();
-          
+
         try {
           parsed = JSON.parse(clean);
         } catch (e2) {
           console.error("JSON parsing error:", e2);
           console.error("Raw model response:", raw);
-          throw new Error("Model returned invalid JSON. Try again or simplify the input.");
+          throw new Error(
+            "Model returned invalid JSON. Try again or simplify the input.",
+          );
         }
       }
 
@@ -586,10 +612,16 @@ export default function App() {
                     onChange={(e) => setModel(e.target.value)}
                     style={{ width: "100%", boxSizing: "border-box" }}
                   >
-                    <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
-                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
+                    <option value="gemini-3-flash-preview">
+                      Gemini 3 Flash
+                    </option>
+                    <option value="gemini-3.1-flash-lite">
+                      Gemini 3.1 Flash Lite
+                    </option>
                     <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                    <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                    <option value="gemini-2.5-flash-lite">
+                      Gemini 2.5 Flash Lite
+                    </option>
                   </select>
                 </div>
               </div>
