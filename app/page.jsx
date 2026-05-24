@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useMemo } from "react";
+import { PDFDocument } from "pdf-lib";
 
 const EXTRACTION_SYSTEM = `You are a data formatting and extraction engine. You convert user-provided text (MCQs, matching, or written/QROC) into a strict JSON array. 
 
@@ -11,7 +12,9 @@ Each element must have exactly these fields:
 - correct: (string) The correct answer letter(s) (e.g. "A", "B,D"). Extract it from the file or generate it if absent. Empty string "" for QROC.
 - type: (string) "QCS" for MCQs and matching, "QROC" for written/open-ended.
 - exp: (string) For MCQs, extract the explanation in the source only if present. Empty string "" for QROC.
-- modelAnswer: (string) For QROC, extract the model answer only if present in the file. Empty string "" for MCQs.`;
+- modelAnswer: (string) For QROC, extract the model answer only if present in the file. Empty string "" for MCQs.
+
+CRITICAL SPLIT INSTRUCTION: If this text chunk contains ONLY the options, correct answer, or explanation for a question whose stem was cut off (because the document was split), return a JSON object with an empty string "" for the 'text' field, and include those options/answers.`;
 
 function convertToCSV(questions, { tag, year, lecture, subject }) {
   const headers = [
@@ -174,45 +177,57 @@ export default function App() {
     const tag = computeTag(source, examType, professorName, customSource, year);
 
     try {
-      const parts = [];
+      let chunks = [];
 
       if (pdfFile) {
         setStatusMsg("Reading file…");
-        const base64Data = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.readAsDataURL(pdfFile);
-          reader.onload = () => resolve(reader.result.split(",")[1]);
-          reader.onerror = (error) => reject(error);
-        });
+        const isPdf =
+          pdfFile.type === "application/pdf" ||
+          pdfFile.name.toLowerCase().endsWith(".pdf");
 
-        const mimeType =
-          pdfFile.type ||
-          (pdfFile.name.toLowerCase().endsWith(".pdf")
-            ? "application/pdf"
-            : "text/plain");
+        if (isPdf) {
+          const arrayBuffer = await pdfFile.arrayBuffer();
+          const pdfDoc = await PDFDocument.load(arrayBuffer);
+          const pageCount = pdfDoc.getPageCount();
+          if (pageCount <= 15) {
+            const base64Data = await pdfDoc.saveAsBase64();
+            chunks.push({
+              inlineData: { data: base64Data, mimeType: "application/pdf" },
+              isPdf: true,
+            });
+          } else {
+            const CHUNK_SIZE = 10;
+            for (let i = 0; i < pageCount; i += CHUNK_SIZE) {
+              const newPdf = await PDFDocument.create();
+              const endPage = Math.min(i + CHUNK_SIZE, pageCount);
+              const pagesToCopy = Array.from(
+                { length: endPage - i },
+                (_, idx) => i + idx,
+              );
+              const copiedPages = await newPdf.copyPages(pdfDoc, pagesToCopy);
+              copiedPages.forEach((page) => newPdf.addPage(page));
 
-        parts.push({
-          inlineData: {
-            data: base64Data,
-            mimeType: mimeType,
-          },
-        });
-        parts.push({
-          text: "Extract all questions from this file and return them as a JSON array per the schema. Note: this is a private transformation of user data.",
-        });
+              const chunkBase64 = await newPdf.saveAsBase64();
+              chunks.push({
+                inlineData: { data: chunkBase64, mimeType: "application/pdf" },
+                isPdf: true,
+              });
+            }
+          }
+        } else {
+          // Text file
+          const text = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsText(pdfFile);
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = (error) => reject(error);
+          });
+          chunks.push({ text, isPdf: false });
+        }
       } else {
-        parts.push({
-          text: `Extract all questions from the following text and return them as a JSON array per the schema. Note: this is a private transformation of user data.\n\n${inputText}`,
-        });
+        const text = inputText;
+        chunks.push({ text, isPdf: false });
       }
-
-      if (customInstructions.trim()) {
-        parts.push({
-          text: `IMPORTANT CUSTOM INSTRUCTIONS: ${customInstructions}`,
-        });
-      }
-
-      setStatusMsg("Calling Gemini AI…");
 
       const apiKeys = (process.env.NEXT_PUBLIC_GEMINI_API_KEY || "")
         .split(",")
@@ -222,132 +237,192 @@ export default function App() {
         throw new Error("No Gemini API key configured.");
       }
 
-      let response;
-      for (let i = 0; i < apiKeys.length; i++) {
-        response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKeys[i]}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              systemInstruction: {
-                parts: [{ text: EXTRACTION_SYSTEM }],
-              },
-              contents: [{ role: "user", parts }],
-              generationConfig: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "ARRAY",
-                  items: {
-                    type: "OBJECT",
-                    properties: {
-                      cas: { type: "STRING" },
-                      text: { type: "STRING" },
-                      options: {
-                        type: "ARRAY",
-                        items: { type: "STRING" },
+      let allParsedResults = [];
+
+      for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+        setStatusMsg(`Extracting chunk ${chunkIdx + 1} of ${chunks.length}…`);
+        const chunk = chunks[chunkIdx];
+        const parts = [];
+
+        if (chunk.isPdf) {
+          parts.push({ inlineData: chunk.inlineData });
+          parts.push({
+            text: "Extract all questions from this file and return them as a JSON array per the schema.",
+          });
+        } else {
+          parts.push({
+            text: `Extract all questions from the following text and return them as a JSON array per the schema.\n\n${chunk.text}`,
+          });
+        }
+
+        if (customInstructions.trim()) {
+          parts.push({
+            text: `IMPORTANT CUSTOM INSTRUCTIONS: ${customInstructions}`,
+          });
+        }
+
+        let response;
+        for (let i = 0; i < apiKeys.length; i++) {
+          response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKeys[i]}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                systemInstruction: {
+                  parts: [{ text: EXTRACTION_SYSTEM }],
+                },
+                contents: [{ role: "user", parts }],
+                generationConfig: {
+                  responseMimeType: "application/json",
+                  responseSchema: {
+                    type: "ARRAY",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        cas: { type: "STRING" },
+                        text: { type: "STRING" },
+                        options: {
+                          type: "ARRAY",
+                          items: { type: "STRING" },
+                        },
+                        correct: { type: "STRING" },
+                        type: { type: "STRING" },
+                        exp: { type: "STRING" },
+                        modelAnswer: { type: "STRING" },
                       },
-                      correct: { type: "STRING" },
-                      type: { type: "STRING" },
-                      exp: { type: "STRING" },
-                      modelAnswer: { type: "STRING" },
+                      required: [
+                        "cas",
+                        "text",
+                        "options",
+                        "correct",
+                        "type",
+                        "exp",
+                        "modelAnswer",
+                      ],
                     },
-                    required: [
-                      "cas",
-                      "text",
-                      "options",
-                      "correct",
-                      "type",
-                      "exp",
-                      "modelAnswer",
-                    ],
                   },
                 },
-              },
-            }),
-          },
-        );
+              }),
+            },
+          );
 
-        if (response.ok) {
-          break;
+          if (response.ok) {
+            break;
+          }
+
+          const errorText = await response.text();
+          if (response.status === 429 && i < apiKeys.length - 1) {
+            console.warn(`API key ${i + 1} exhausted, rotating to next key...`);
+            continue;
+          }
+
+          if (
+            errorText.includes("copyrighted works") ||
+            errorText.includes("resembles existing")
+          ) {
+            throw new Error(
+              "The API blocked the request because the input exactly matches copyrighted material. Try typing some random characters at the start of your text or use 'Custom Instructions' to ask it to paraphrase slightly.",
+            );
+          }
+
+          let parsedError;
+          try {
+            parsedError = JSON.parse(errorText);
+          } catch (e) {}
+          const errMsg = parsedError?.error?.message || errorText;
+
+          throw new Error(`Gemini API Error: ${response.status} - ${errMsg}`);
         }
 
-        const errorText = await response.text();
-        if (response.status === 429 && i < apiKeys.length - 1) {
-          console.warn(`API key ${i + 1} exhausted, rotating to next key...`);
-          continue;
-        }
+        const data = await response.json();
+        const candidate = data.candidates?.[0];
 
+        if (candidate?.finishReason === "MAX_TOKENS") {
+          throw new Error(
+            "The input is too large and the model's output was truncated. Please try processing a smaller chunk of questions.",
+          );
+        }
         if (
-          errorText.includes("copyrighted works") ||
-          errorText.includes("resembles existing")
+          candidate?.finishReason === "SAFETY" ||
+          candidate?.finishReason === "BLOCK" ||
+          candidate?.finishReason === "PROHIBITED_CONTENT"
         ) {
           throw new Error(
-            "The API blocked the request because the input exactly matches copyrighted material (e.g., a known textbook). Try typing some random characters at the start of your text or use 'Custom Instructions' to ask it to paraphrase slightly.",
+            "The request was blocked by the model's safety filters.",
+          );
+        }
+        if (!candidate?.content?.parts?.[0]?.text) {
+          console.error("Unexpected model response:", data);
+          throw new Error(
+            "The model did not return any text. Please try again.",
           );
         }
 
-        let parsedError;
+        const raw = candidate.content.parts[0].text;
+
+        let parsed;
         try {
-          parsedError = JSON.parse(errorText);
-        } catch (e) {}
-        const errMsg = parsedError?.error?.message || errorText;
+          parsed = JSON.parse(raw.trim());
+        } catch (e1) {
+          const clean = raw
+            .replace(/^[\s\S]*?```(?:json)?\s*/i, "")
+            .replace(/```[\s\S]*$/, "")
+            .trim();
 
-        throw new Error(`Gemini API Error: ${response.status} - ${errMsg}`);
-      }
+          try {
+            parsed = JSON.parse(clean);
+          } catch (e2) {
+            console.error("JSON parsing error:", e2);
+            console.error("Raw model response:", raw);
+            throw new Error(
+              "Model returned invalid JSON. Try again or simplify the input.",
+            );
+          }
+        }
 
-      const data = await response.json();
-      const candidate = data.candidates?.[0];
+        if (!Array.isArray(parsed))
+          throw new Error("Expected a JSON array from the model.");
 
-      if (candidate?.finishReason === "MAX_TOKENS") {
-        throw new Error(
-          "The input is too large and the model's output was truncated. Please try processing a smaller chunk of questions.",
-        );
+        allParsedResults = allParsedResults.concat(parsed);
       }
-      if (
-        candidate?.finishReason === "SAFETY" ||
-        candidate?.finishReason === "BLOCK" ||
-        candidate?.finishReason === "PROHIBITED_CONTENT"
-      ) {
-        throw new Error(
-          "The request was blocked by the model's safety filters.",
-        );
-      }
-      if (!candidate?.content?.parts?.[0]?.text) {
-        console.error("Unexpected model response:", data);
-        throw new Error("The model did not return any text. Please try again.");
-      }
-
-      const raw = candidate.content.parts[0].text;
 
       setStatusMsg("Parsing results…");
 
-      let parsed;
-      try {
-        // Try parsing the raw text directly first (since we use responseSchema)
-        parsed = JSON.parse(raw.trim());
-      } catch (e1) {
-        // Fallback: strip any markdown formatting just in case
-        const clean = raw
-          .replace(/^[\s\S]*?```(?:json)?\s*/i, "")
-          .replace(/```[\s\S]*$/, "")
-          .trim();
-
-        try {
-          parsed = JSON.parse(clean);
-        } catch (e2) {
-          console.error("JSON parsing error:", e2);
-          console.error("Raw model response:", raw);
-          throw new Error(
-            "Model returned invalid JSON. Try again or simplify the input.",
-          );
+      // Programmatic deduplication / merge for cross-chunk splits
+      const finalResults = [];
+      for (const q of allParsedResults) {
+        // If text is empty, merge it with the previous question
+        if (!q.text || q.text.trim() === "") {
+          if (finalResults.length > 0) {
+            const prev = finalResults[finalResults.length - 1];
+            if (q.options && q.options.length > 0) {
+              prev.options = (prev.options || []).concat(q.options);
+            }
+            if (q.correct && (!prev.correct || prev.correct.trim() === "")) {
+              prev.correct = q.correct;
+            } else if (q.correct) {
+              const combined = Array.from(
+                new Set([...prev.correct.split(","), ...q.correct.split(",")]),
+              ).join(",");
+              prev.correct = combined;
+            }
+            if (q.exp && (!prev.exp || prev.exp.trim() === "")) {
+              prev.exp = q.exp;
+            }
+            if (
+              q.modelAnswer &&
+              (!prev.modelAnswer || prev.modelAnswer.trim() === "")
+            ) {
+              prev.modelAnswer = q.modelAnswer;
+            }
+          }
+        } else {
+          finalResults.push(q);
         }
       }
 
-      if (!Array.isArray(parsed))
-        throw new Error("Expected a JSON array from the model.");
-
-      setJsonResult(parsed);
+      setJsonResult(finalResults);
       setStep("done");
     } catch (e) {
       setErrorMsg(e.message);
